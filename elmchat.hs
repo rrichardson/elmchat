@@ -8,6 +8,8 @@ import Data.Default (def)
 import Data.Typeable
 import qualified Data.Map as Map
 import qualified Data.Aeson as J
+import qualified Data.Text as T
+import qualified Data.Text.IO as T
 
 -- Network
 import Network.Wai.Middleware.Static
@@ -26,8 +28,10 @@ import Control.Monad.IO.Class (liftIO)
 
 import qualified Control.Monad.State as S
 import Control.Lens (makeLenses)
-import Control.Monad (forever)
+import Control.Monad (forever, when)
 import Control.Concurrent (forkIO, threadDelay)
+import Data.Monoid (mappend)
+import Control.Exception (fromException)
 
 import Data.Time.Clock (getCurrentTime)
 data Clock = Clock
@@ -75,6 +79,7 @@ config db = def { verbose = 0
 fixtures :: M.Map String String
 fixtures = M.fromList [("one", "1"), ("two", "2"), ("three", "3")]
 
+
 ------------------------------------------------------------------------------
 -- MAIN MAIN
 
@@ -118,10 +123,26 @@ httpmain database = do
             _          <- liftIO $ update database (InsertKey key val)
             status status200
 
+
 ------------------------------------------------------------------------------
 -- Websockets MAIN
 
+type Client = (T.Text, WS.Sink WS.Hybi10)
 
-socketsmain :: AcidState (EventState AllKeys) -> WS.Request -> WS.WebSockets WS.Hybi00 ()
+socketsmain :: AcidState (EventState AllKeys) -> WS.Request -> WS.WebSockets WS.Hybi10 ()
 socketsmain database rq = do
-     WS.acceptRequest rq
+    WS.acceptRequest rq
+    WS.getVersion >>= liftIO . putStrLn . ("Client version: " ++)
+    sink <- WS.getSink
+    msg <- WS.receiveData
+    talk database ("visitor", sink)
+
+talk :: WS.Protocol p => AcidState (EventState AllKeys) -> Client -> WS.WebSockets p ()
+talk db client@(user, _) = flip WS.catchWsError catchDisconnect $
+  forever $ do
+    msg <- WS.receiveData
+    liftIO $ T.putStrLn msg
+    where
+      catchDisconnect e = case fromException e of
+         Just WS.ConnectionClosed -> liftIO $ T.putStrLn $ user `mappend` (T.pack " disconnected")
+         _ -> return ()
