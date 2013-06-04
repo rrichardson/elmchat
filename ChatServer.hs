@@ -134,7 +134,7 @@ socketsmain database rq = do
     WS.acceptRequest rq
     WS.getVersion >>= liftIO . putStrLn . ("Client version: " ++)
     sink <- WS.getSink
-    msg <- WS.receiveData
+    (WS.receiveData :: WS.WebSockets WS.Hybi10 T.Text) >>= liftIO . T.putStrLn
     talk database ("visitor", sink)
 
 talk :: WS.Protocol p => AcidState (EventState AllKeys) -> Client -> WS.WebSockets p ()
