@@ -1,9 +1,12 @@
-{-# LANGUAGE OverloadedStrings, TypeFamilies, DeriveDataTypeable, TemplateHaskell #-}
+{-# LANGUAGE OverloadedStrings, TypeFamilies, DeriveDataTypeable, TemplateHaskell, BangPatterns #-}
 
 module Main where
 
 import Web.Scotty
-
+import Language.Elm (toHtml)
+import Text.Blaze.Html (Html)
+import Text.Blaze.Html.Renderer.Utf8 (renderHtmlBuilder)
+import Blaze.ByteString.Builder (Builder)
 import Data.Default (def)
 import Data.Typeable
 import qualified Data.Map as Map
@@ -14,6 +17,7 @@ import qualified Data.Text.IO as T
 -- Network
 import Network.Wai.Middleware.Static
 import Network.Wai.Middleware.RequestLogger
+import Network.Wai (Response, Response(ResponseBuilder, ResponseFile, ResponseSource))
 import Network.Wai.Handler.Warp (settingsPort, settingsIntercept )
 import Network.HTTP.Types  (status404, status200)
 import qualified Network.WebSockets             as WS
@@ -89,18 +93,19 @@ main = do
     db <- openLocalStateFrom "db/" (Database fixtures)
 
     putStrLn "Starting HTTP Server."
-    scottyOpts (config db) (httpmain db)
-
+    source <- readFile "Client.elm"
+    let index = toHtml "js/elm-runtime.js" "Chat Time!" source 
+    scottyOpts (config db) (httpmain index db)
 
 ------------------------------------------------------------------------------
 -- HTTP MAIN
 
-httpmain :: AcidState (EventState AllKeys) -> ScottyM ()
-httpmain database = do
+httpmain :: Html -> AcidState (EventState AllKeys) -> ScottyM ()
+httpmain index database = do
         middleware logStdoutDev
         middleware $ staticPolicy (noDots >-> addBase "static")
 
-        get "/" $ file "index.html"
+        get "/" $ blaze index
 
         get "/read/" $ do
             result <- liftIO $ query database (AllKeys 10)
@@ -123,7 +128,19 @@ httpmain database = do
             _          <- liftIO $ update database (InsertKey key val)
             status status200
 
+-- from https://github.com/jb55/scotty-blaze/blob/master/src/Web/Scotty/Blaze.hs
+blaze :: Html -> ActionM ()
+blaze h = do
+  header "Content-Type" "text/html"
+  builder $ renderHtmlBuilder h
 
+builder :: Builder -> ActionM ()
+builder = S.modify . setContent
+
+setContent :: Builder -> Response -> Response
+setContent b (ResponseBuilder s h _) = ResponseBuilder s h b
+setContent b (ResponseFile s h _ _)  = ResponseBuilder s h b
+setContent b (ResponseSource s h _)  = ResponseBuilder s h b
 ------------------------------------------------------------------------------
 -- Websockets MAIN
 
@@ -140,7 +157,7 @@ socketsmain database rq = do
 talk :: WS.Protocol p => AcidState (EventState AllKeys) -> Client -> WS.WebSockets p ()
 talk db client@(user, _) = flip WS.catchWsError catchDisconnect $
   forever $ do
-    msg <- WS.receiveData
+    !msg <- WS.receiveData
     liftIO $ T.putStrLn msg
     where
       catchDisconnect e = case fromException e of
